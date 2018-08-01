@@ -1,0 +1,344 @@
+#!/bin/bash
+
+MAJOR_VERSION=0
+MINOR_VERSION=1
+PATCH_VERSION=0
+
+usage_exit()
+{
+	cat >&2 <<EOF
+efiappbnc $MAJOR_VERSION.$MINOR_VERSION.$PATCH_VERSION
+Usage: efiappbnc [<options>] <application_name>>
+       efiappbnc configure
+
+DESCRIPTION
+	The script builds EFI applications using the EDK2 environment and copys
+	the binary to an OVMF qemu session.
+
+CONFIGURE
+	The configure command allows you to edit configuration variables. The
+	values that you set here will be used on each invoke of the script.
+
+APPLICATIONS PROFILES
+	The script supports saving and loading of application profiles. Profiles
+	contain all the input options for a specific application. They are saved
+	in the relative path of the script under "profiles" directory.
+
+	When the script launches, it loads the profile for the specific
+	application if one exists. At the end, the script will ask to save the
+	current application profile if one doesn't exists or if changes were made
+	to the current one.
+
+OPTIONS
+	-v
+	--verbose
+
+	-f
+	--fast		Don't ask for any input that is already present on the
+			release profile. Display a summary of the profile.
+
+	-h
+	--help
+
+EOF
+exit 0
+}
+
+# ==============================================================================
+
+SCRIPT_START_DIR=`pwd`
+
+# ==============================================================================
+
+# Printing functions and parameters
+
+NORMAL="\033[0m"
+BOLD="\033[1m"
+GREEN="\033[32;1m"
+RED="\033[31;1m"
+INPUT="\033[0;33m"
+OPTIONS="\033[0;31m"
+
+VERBOSITY="--quiet"
+
+# Print error message, remove working directory, and exit.
+abort()
+{
+	local error_message=$1
+
+	cd "$SCRIPT_START_DIR"
+	echo -e "${RED}## Error: $error_message${NORMAL}"
+	exit 1
+}
+
+announce()
+{
+	echo -e "${GREEN}>> ${NORMAL}${BOLD}${1} ${NORMAL}"
+}
+
+title()
+{
+	echo -e "\t${GREEN}===${1}===${NORMAL}"
+}
+
+request_input()
+{
+	query_text="$1"
+	echo -e "${INPUT}${query_text}: ${NORMAL}\c"
+}
+
+# ==============================================================================
+
+# Configurations functions
+
+conffile="${SCRIPT_START_DIR}/.config"
+declare -A configs
+configs=(
+	[OVMF_PATH]="OVMF virtual image file path"
+	[EDK2_PATH]="EDK2 repository path"
+	[NUM_OF_THREADS]="Number of threads to build"
+)
+
+load_configs()
+{
+	[ ! -e $conffile ] && edit_configs
+	while IFS="=" read -r key value; do
+		if [[ -v configs[$key] ]]; then
+			eval $key=\$value;
+		fi
+	done < $conffile
+}
+
+save_configs()
+{
+	announce "Saving configurations"
+	for config in "${!configs[@]}"; do
+		echo "${config}=${!config}"
+	done > $conffile
+}
+
+list_configs()
+{
+	local keys=(${!configs[@]})
+	for i in ${!keys[@]}; do
+		config=${keys[$i]}
+		printf "%d) %-30s%s\n" $(( $i + 1 )) "${configs[$config]}:" ${!config:-"Not set"}
+	done
+}
+
+edit_configs()
+{
+	[ -e $conffile ] && load_configs
+	title "Edit configurations"
+	local keys=(${!configs[@]})
+	while true; do
+		list_configs
+		request_input "Select a number to edit (Press enter to save and continue)"
+		read -e -r -n 1 i
+		[[ -z $i ]] && break
+		[[ $i < 1 || $i > ${#keys[@]} ]] && continue
+		config=${keys[$(( $i - 1 ))]}
+		request_input "Edit \"${configs[$config]}\""
+		read -e -r -i "${!config}" ${config}
+	done
+	save_configs
+}
+
+check_config()
+{
+	local config=$1
+
+	[ ! -v configs[$config] ] && abort "Unknown config \"${config}\""
+	[ -n "${!config}" ] && return
+	request_input "${BOLD}Missing configuration. Input ${configs[$config]}"
+	read -e -i "${!config}" ${config}
+	save_configs
+}
+
+# ==============================================================================
+
+# Application options functions
+
+FAST="false"
+VALUE_CHANGED="false"
+
+app_profiles_dir="profiles"
+app_profile_path="\${app_profiles_dir}/\${APP_NAME}"
+
+declare -A app_options
+app_options=(
+	[APP_NAME]="application name"
+	[PLATFORM_NAME]="platform name"
+	[PACKAGE_NAME]="package name"
+	[PLATFORM_FILE]="package DSC file name"
+	[APP_FILE_NAME]="application file name"
+)
+
+declare -A app_defaults
+app_defaults=(
+	[PACKAGE_NAME]="\${PLATFORM_NAME}Pkg"
+	[PLATFORM_FILE]="\${PACKAGE_NAME}.dsc"
+	[APP_FILE_NAME]="\${APP_NAME}.efi"
+)
+
+load_profile()
+{
+	[ ! -r `eval echo ${app_profile_path}` ] && FAST="false" && return
+	announce "Loading saved app profile for ${APP_NAME}"
+	while IFS="=" read -r key value; do
+		if [[ -v app_options[$key] ]]; then
+			eval $key=\$value;
+		fi
+	done < `eval echo ${app_profile_path}`
+
+	[[ $FAST == "false" ]] && return;
+
+	title "Summary of app profile"
+	for option in "${!app_options[@]}"; do
+		[ -z "${!option}" ] && continue
+		local option_desc=${app_options[$option]}
+		option_desc=${option_desc% \(*} # remove parentheses from descriptions
+		printf "%-30s%s\n" "${option_desc^}:" ${!option}
+	done
+	echo -e "\nPress ENTER to continue or Ctrl-C to abort"
+	read
+}
+
+save_profile()
+{
+	[[ $VALUE_CHANGED == "false" ]] && return;
+	while true; do
+		request_input "Do you want to save a app profile? (Press y/n)"
+		read -e -r -n 1 choice
+		[[ $choice =~ "n" ]] && return
+		[[ $choice =~ "y" ]] && break
+	done
+	announce "Saving a profile for ${APP_NAME} app"
+	mkdir -p "${app_profiles_dir}"
+	for option in "${!app_options[@]}"; do
+		[ -n "${!option}" ] && echo "${option}=${!option}"
+	done > `eval echo ${app_profile_path}`
+}
+
+# Checks if the default value contains unconfigured values
+check_default()
+{
+	local option="$1"
+	for config in "${!configs[@]}"; do
+		if (echo "${app_defaults[$option]}" | grep -q "${config}"); then
+			check_config $config
+		fi
+	done
+}
+
+request_value()
+{
+	local option="$1"
+	local current_value=${!option}
+	local default_value=
+
+	[[ -n "${current_value}" && $FAST == "true" ]] && return;
+
+	if [[ -z "${current_value}" && -n "${app_defaults[$option]}" ]]; then
+		check_default $option
+		default_value=`eval echo ${app_defaults[$option]}`
+	else
+		default_value=${current_value}
+	fi
+	request_input "Input ${app_options[$option]}"
+	read -e -i "${default_value}" ${option}
+	[[ "${current_value}" != "${!option}" ]] && VALUE_CHANGED="true"
+}
+
+# ==============================================================================
+
+
+edk2_build()
+{
+	title "EDK2 build"
+	check_config EDK2_PATH
+	cd ${EDK2_PATH}
+	announce "Building shell environment"
+	. edksetup.sh BaseTools
+
+	check_config NUM_OF_THREADS
+	request_value PLATFORM_NAME
+	request_value PACKAGE_NAME
+	request_value PLATFORM_FILE
+	announce "Building package"
+	build ${VERBOSITY} -n ${NUM_OF_THREADS} --platform=${PACKAGE_NAME}/${PLATFORM_FILE}
+	[ $? -eq 0 ] || abort "Package building failed"
+	cd ${SCRIPT_START_DIR}
+}
+
+copy_to_image()
+{
+	title "Copy application to OVMF drive"
+	check_config OVMF_PATH
+	request_value APP_FILE_NAME
+	cd ${OVMF_PATH}
+	announce "Mounting OVMF drive image"
+	mkdir -p "mount"
+	sudo mount OVMF_DISK.img mount/
+	[ $? -eq 0 ] || abort "Mounting failed"
+	announce "Copying application to mounted image"
+	sudo cp ${EDK2_PATH}/Build/${PLATFORM_NAME}/DEBUG_GCC5/X64/${APP_FILE_NAME} mount/
+	local copy_ret=$?
+	announce "Unmounting OVMF drive image"
+	sudo umount ${OVMF_PATH}/mount/
+	[ ${copy_ret} -eq 0 ] || abort "Application copying failed"
+	[ $? -eq 0 ] || abort "Unmounting copying failed"
+	cd ${SCRIPT_START_DIR}
+}
+
+reset_qemu()
+{
+	announce "Resseting OVMF qemu session"
+	virsh reset $(virsh list --name)
+}
+
+parse_cmdline_input()
+{
+	while true; do
+		case "$1" in
+		configure)
+			edit_configs
+			echo "Done!"
+			exit 0
+			shift
+			;;
+		-v|--verbose)
+			VERBOSITY="--verbose"
+			shift
+			;;
+		-f|--fast)
+			FAST="true"
+			shift
+			;;
+		-h|--help)
+			usage_exit
+			shift
+			;;
+		*)
+			break
+			;;
+		esac
+	done
+
+	APP_NAME="$1"
+
+	[[ -z $APP_NAME ]] && usage_exit
+}
+
+# ==============================================================================
+
+# "Main"
+
+parse_cmdline_input $@
+load_configs
+load_profile
+edk2_build
+copy_to_image
+reset_qemu
+save_profile
+announce "Done!"
