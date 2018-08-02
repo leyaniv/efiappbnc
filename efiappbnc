@@ -8,7 +8,7 @@ usage_exit()
 {
 	cat >&2 <<EOF
 efiappbnc $MAJOR_VERSION.$MINOR_VERSION.$PATCH_VERSION
-Usage: efiappbnc [<options>] <application_name>>
+Usage: efiappbnc [<options>] [<application_name>]
        efiappbnc configure
 
 DESCRIPTION
@@ -24,10 +24,9 @@ APPLICATIONS PROFILES
 	contain all the input options for a specific application. They are saved
 	in the relative path of the script under "profiles" directory.
 
-	When the script launches, it loads the profile for the specific
-	application if one exists. At the end, the script will ask to save the
-	current application profile if one doesn't exists or if changes were made
-	to the current one.
+	When the script launches, it will ask to select a profile. At the end,
+	the script will ask to save the current application profile if one
+	doesn't exists or if changes were made to the current one.
 
 OPTIONS
 	-v
@@ -181,8 +180,38 @@ app_defaults=(
 	[APP_FILE_NAME]="\${APP_NAME}.efi"
 )
 
+select_profile()
+{
+	announce "Looking for available app profiles"
+	if [[ ! -d ${app_profiles_dir} || -z "$(ls -A ${app_profiles_dir})" ]]; then
+		announce "No profiles found, create a new one"
+		request_value APP_NAME
+		return
+	fi
+
+	local i=1
+	while IFS= read -r f; do
+  		profile_files[i++]="$f"
+	done < <(ls -A ${app_profiles_dir})
+
+	while true; do
+		for i in ${!profile_files[@]}; do
+			printf "%d) %s\n" $i "${profile_files[$i]}"
+		done
+		request_input "Select a profile number (Press enter to create new)"
+		read -e -r -n $(( $i / 10 + 1)) i
+		[[ -z $i ]] && break
+		[[ $i != +([0-9]) ]] && continue
+		[[ $i > 0 && $i -le ${#profile_files[@]} ]] && break
+	done
+
+	[[ -z $i ]] && request_value APP_NAME && return
+	APP_NAME=${profile_files[$i]}
+}
+
 load_profile()
 {
+	[[ -z $APP_NAME ]] && select_profile
 	[ ! -r `eval echo ${app_profile_path}` ] && FAST="false" && return
 	announce "Loading saved app profile for ${APP_NAME}"
 	while IFS="=" read -r key value; do
@@ -326,8 +355,6 @@ parse_cmdline_input()
 	done
 
 	APP_NAME="$1"
-
-	[[ -z $APP_NAME ]] && usage_exit
 }
 
 # ==============================================================================
