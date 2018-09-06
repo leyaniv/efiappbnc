@@ -2,7 +2,7 @@
 
 MAJOR_VERSION=0
 MINOR_VERSION=2
-PATCH_VERSION=0
+PATCH_VERSION=1
 
 usage_exit()
 {
@@ -105,12 +105,12 @@ configs=(
 
 load_configs()
 {
-	[ ! -e $conffile ] && edit_configs
+	[ ! -e "$conffile" ] && edit_configs
 	while IFS="=" read -r key value; do
 		if [[ -v configs[$key] ]]; then
 			eval $key=\$value;
 		fi
-	done < $conffile
+	done < "$conffile"
 }
 
 save_configs()
@@ -118,7 +118,7 @@ save_configs()
 	announce "Saving configurations"
 	for config in "${!configs[@]}"; do
 		echo "${config}=${!config}"
-	done > $conffile
+	done > "$conffile"
 }
 
 list_configs()
@@ -132,7 +132,7 @@ list_configs()
 
 edit_configs()
 {
-	[ -e $conffile ] && load_configs
+	[ -e "$conffile" ] && load_configs
 	title "Edit configurations"
 	local keys=(${!configs[@]})
 	while true; do
@@ -216,14 +216,14 @@ select_profile()
 
 load_profile()
 {
-	[[ -z $APP_NAME ]] && select_profile
+	[[ -z "$APP_NAME" ]] && select_profile
 	[ ! -r `eval echo ${app_profile_path}` ] && FAST="false" && return
 	announce "Loading saved app profile for ${APP_NAME}"
 	while IFS="=" read -r key value; do
 		if [[ -v app_options[$key] ]]; then
 			eval $key=\$value;
 		fi
-	done < `eval echo ${app_profile_path}`
+	done < "`eval echo ${app_profile_path}`"
 
 	[[ $FAST == "false" ]] && return;
 
@@ -251,7 +251,7 @@ save_profile()
 	mkdir -p "${app_profiles_dir}"
 	for option in "${!app_options[@]}"; do
 		[ -n "${!option}" ] && echo "${option}=${!option}"
-	done > `eval echo ${app_profile_path}`
+	done > "`eval echo ${app_profile_path}`"
 }
 
 # Checks if the default value contains unconfigured values
@@ -302,7 +302,7 @@ edk2_build()
 	announce "Building package"
 	build ${VERBOSITY} -n ${NUM_OF_THREADS} --platform=${PACKAGE_NAME}/${PLATFORM_FILE}
 	[ $? -eq 0 ] || abort "Package building failed"
-	cd ${SCRIPT_START_DIR}
+	cd "${SCRIPT_START_DIR}"
 }
 
 copy_to_image()
@@ -322,7 +322,7 @@ copy_to_image()
 	sudo umount ${OVMF_PATH}/mount/
 	[ ${copy_ret} -eq 0 ] || abort "Application copying failed"
 	[ $? -eq 0 ] || abort "Unmounting copying failed"
-	cd ${SCRIPT_START_DIR}
+	cd "${SCRIPT_START_DIR}"
 }
 
 reset_qemu()
@@ -348,7 +348,7 @@ build_ovmf()
 	[ $? -eq 0 ] || abort "Copy OVMF_CODE.fd failed"
 	cp ${EDK2_PATH}/Build/${PLATFORM_NAME}/DEBUG_GCC5/FV/OVMF_VARS.fd OVMF_VARS.fd
 	[ $? -eq 0 ] || abort "Copy OVMF_VARS.fd failed"
-	cd ${SCRIPT_START_DIR}
+	cd "${SCRIPT_START_DIR}"
 
 	announce "Destroying OVMF session"
 	local OVMF_NAME=$(virsh list --name)
