@@ -37,6 +37,10 @@ OPTIONS
 	-v
 	--verbose
 
+	-u
+	--usb		Copy the compiled application to an attached usb storage
+			device. This does not work for OVMF builds
+
 	-f
 	--fast		Don't ask for any input that is already present on the
 			release profile. Display a summary of the profile.
@@ -164,6 +168,7 @@ check_config()
 # Application options functions
 
 FAST="false"
+USB="false"
 VALUE_CHANGED="false"
 
 app_profiles_dir="profiles"
@@ -325,6 +330,36 @@ copy_to_image()
 	cd "${SCRIPT_START_DIR}"
 }
 
+copy_to_usb()
+{
+	USB_DEVICE=`lsblk | grep /media | grep -oP "sd[a-z][0-9]?" | awk '{print "/dev/"$1}'`
+	[[ -z "$USB_DEVICE" ]] && abort "Can't find USB storage"
+	title "Copy application to USB device ${USB_DEVICE}"
+	USB_MOUNT=`lsblk | grep -o /media.*`
+	cd ${USB_MOUNT}
+	mkdir -p "EFI"
+	cd EFI
+	mkdir -p "BOOT"
+	cd BOOT
+	announce "Copying application to ${PWD}"
+	sudo cp ${EDK2_PATH}/Build/${PLATFORM_NAME}/DEBUG_GCC5/X64/${APP_FILE_NAME} BOOTX64.EFI
+	[ $? -eq 0 ] || abort "Application copying failed"
+	cd "${SCRIPT_START_DIR}"
+	announce "Ejecting USB storage"
+	sudo eject ${USB_DEVICE}
+	[ $? -eq 0 ] || abort "Unmounting USB failed"
+}
+
+copy_image()
+{
+	if [[ $USB == "false" ]]; then
+		copy_to_image
+		reset_qemu
+	else
+		copy_to_usb
+	fi
+}
+
 reset_qemu()
 {
 	announce "Resseting OVMF qemu session"
@@ -374,6 +409,10 @@ parse_cmdline_input()
 			exit 0
 			shift
 			;;
+		-u|--usb)
+			USB="true"
+			shift
+			;;
 		-v|--verbose)
 			VERBOSITY="--verbose"
 			shift
@@ -403,7 +442,6 @@ parse_cmdline_input $@
 load_configs
 load_profile
 edk2_build
-copy_to_image
-reset_qemu
+copy_image
 save_profile
 announce "Done!"
